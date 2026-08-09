@@ -1,0 +1,92 @@
+name: SWYH-RS macOS ARM64 test build
+
+on:
+  push:
+    branches:
+      - swyh-macos-build
+  workflow_dispatch:
+
+concurrency:
+  group: swyh-macos-build
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Apple Silicon app
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: "14.6"
+
+    steps:
+      - name: Check out SWYH-RS 1.20.5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dheijl/swyh-rs
+          ref: 1.20.5
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify preinstalled toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          rustc --version
+          cargo --version
+          clang --version | head -1
+          cmake --version | head -1
+          ninja --version
+
+      - name: Build debug binary
+        run: cargo build --locked --bin swyh-rs
+
+      - name: Package ad-hoc signed app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app="dist/SWYH-RS.app"
+          contents="$app/Contents"
+          binary="$contents/MacOS/swyh-rs"
+          plist="$contents/Info.plist"
+          zip="dist/swyh-rs-1.20.5-macos-arm64.zip"
+
+          mkdir -p "$contents/MacOS" "$contents/Resources"
+          install -m 755 target/debug/swyh-rs "$binary"
+
+          plutil -create xml1 "$plist"
+          plutil -insert CFBundleDevelopmentRegion -string en "$plist"
+          plutil -insert CFBundleDisplayName -string SWYH-RS "$plist"
+          plutil -insert CFBundleExecutable -string swyh-rs "$plist"
+          plutil -insert CFBundleIdentifier -string io.github.nosh118.swyh-rs-test "$plist"
+          plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$plist"
+          plutil -insert CFBundleName -string SWYH-RS "$plist"
+          plutil -insert CFBundlePackageType -string APPL "$plist"
+          plutil -insert CFBundleShortVersionString -string 1.20.5 "$plist"
+          plutil -insert CFBundleVersion -string 1 "$plist"
+          plutil -insert LSMinimumSystemVersion -string 14.6 "$plist"
+          plutil -insert NSAudioCaptureUsageDescription -string "SWYH-RS captures audio playing on this Mac so it can stream it to a selected network audio device." "$plist"
+          plutil -insert NSLocalNetworkUsageDescription -string "SWYH-RS uses the local network to discover and stream audio to UPnP, DLNA, and OpenHome devices." "$plist"
+          plutil -insert NSHighResolutionCapable -bool YES "$plist"
+
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          file "$binary"
+          otool -L "$binary"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+          shasum -a 256 "$zip"
+
+      - name: Upload test build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swyh-rs-1.20.5-macos-arm64
+          path: dist/swyh-rs-1.20.5-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
